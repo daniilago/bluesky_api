@@ -1,0 +1,20 @@
+[project]
+name = "bluesky-api"
+version = "0.1.0"
+description = "Análise de comunidades e recomendação em redes sociais via API do Bluesky"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "atproto>=0.0.68",
+    "networkx>=3.6",
+    "python-louvain>=0.16",
+    "scikit-learn>=1.9",
+    "pandas>=3.0",
+    "matplotlib>=3.11",
+    "reportlab>=4.0",
+    "wordcloud>=1.9",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+bluesky-analysis = "main:main"
