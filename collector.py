@@ -44,6 +44,7 @@ def search_posts(client: Client, query: str, max_posts: int = 100) -> list[dict]
                     "text": item.record.text or "",
                     "likes": item.like_count or 0,
                     "reposts": item.repost_count or 0,
+                    "query": query,          # qual query originou este post
                 }
             )
 
@@ -107,11 +108,64 @@ def collect_network(
 
     return {
         "query": query,
+        "queries": [query],
         "posts": posts,
         "follows": follows,
         "authors": authors,
     }
 
+
+def collect_network_multi(
+    queries: list[str],
+    max_posts_per_query: int = 80,
+    max_users: int = 50,
+    max_follows_per_user: int = 40,
+) -> dict:
+    """
+    Coleta posts de múltiplas queries e constrói uma rede unificada.
+
+    A cada query são coletados até max_posts_per_query posts.
+    Os autores são dedupicados globalmente, e as relações de follow
+    são coletadas uma única vez por autor (mesmo que ele apareça em
+    várias queries).
+
+    O campo 'query' de cada post indica qual busca o originou,
+    o que permite análises comparativas entre as queries.
+    """
+    client = _get_client()
+
+    all_posts: list[dict] = []
+    seen_uris: set[str] = set()
+
+    for q in queries:
+        print(f"  → Buscando '{q}'...")
+        posts = search_posts(client, q, max_posts_per_query)
+        for p in posts:
+            if p["uri"] not in seen_uris:
+                seen_uris.add(p["uri"])
+                all_posts.append(p)
+        time.sleep(1.0)   # pausa entre queries
+
+    # autores únicos em ordem de aparição, limitados a max_users
+    authors = list(dict.fromkeys(p["author"] for p in all_posts))[:max_users]
+    author_set = set(authors)
+
+    print(f"  → Coletando follows de {len(authors)} autores...")
+    follows: list[dict] = []
+    for author in authors:
+        targets = get_follows(client, author, max_follows_per_user)
+        for target in targets:
+            if target in author_set and target != author:
+                follows.append({"source": author, "target": target})
+        time.sleep(0.3)
+
+    return {
+        "query": " | ".join(queries),   # label combinado para o relatório
+        "queries": queries,
+        "posts": all_posts,
+        "follows": follows,
+        "authors": authors,
+    }
 
 
 def save_data(data: dict, path: Path | None = None) -> Path:
