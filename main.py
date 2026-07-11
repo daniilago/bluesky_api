@@ -7,7 +7,7 @@ import sys
 from dotenv import load_dotenv
 
 from collector import collect_network, collect_network_multi, save_data
-from run_pipeline import run_analysis
+from run_pipeline import run_analysis, run_analysis_with_pdf
 
 
 def main():
@@ -79,7 +79,7 @@ def main():
         print("  BLUESKY_PASSWORD=sua-senha-de-app")
         sys.exit(1)
 
-    run_analysis(data)
+    run_analysis_with_pdf(data)
 
 
 if __name__ == "__main__":

@@ -85,7 +85,7 @@ def plot_sentiment_distribution(
     # Box-plot por comunidade
     communities_sorted = sorted(df["comunidade"].unique())
     data_by_comm = [df[df["comunidade"] == c]["compound"].values for c in communities_sorted]
-    bp = axes[0].boxplot(data_by_comm, labels=[f"Com. {c}" for c in communities_sorted], patch_artist=True)
+    bp = axes[0].boxplot(data_by_comm, tick_labels=[f"Com. {c}" for c in communities_sorted], patch_artist=True)
     colors = plt.cm.Set3(np.linspace(0, 1, len(communities_sorted)))
     for patch, color in zip(bp["boxes"], colors):
         patch.set_facecolor(color)
@@ -133,7 +133,7 @@ def plot_sentiment_stacked(
     ax.set_xticks(list(x))
     ax.set_xticklabels([f"Com. {c}" for c in comms])
     ax.set_ylabel("Proporção (%)")
-    ax.set_title("Composição de sentimento por comunidade")
+    ax.set_title("Composição de sentimento por comunidade", pad=30)
     ax.legend(loc="upper right")
     # anotação da média compound
     for i, (_, row) in enumerate(summary.iterrows()):

@@ -86,24 +86,25 @@ def collect_network(
 ) -> dict:
     """
     Coleta posts e relações de follow entre autores encontrados.
-
-    Metodologia:
-    1. Buscar posts por termo
-    2. Extrair autores únicos
-    3. Coletar relações de follow entre autores da amostra
     """
     client = _get_client()
     posts = search_posts(client, query, max_posts)
 
-    authors = list(dict.fromkeys(p["author"] for p in posts))[:max_users]
+    authors = [
+        a for a in dict.fromkeys(p["author"] for p in posts)
+        if a != "handle.invalid" and "." in a
+    ][:max_users]
     author_set = set(authors)
 
     follows: list[dict] = []
     for author in authors:
-        targets = get_follows(client, author, max_follows_per_user)
-        for target in targets:
-            if target in author_set and target != author:
-                follows.append({"source": author, "target": target})
+        try:
+            targets = get_follows(client, author, max_follows_per_user)
+            for target in targets:
+                if target in author_set and target != author:
+                    follows.append({"source": author, "target": target})
+        except Exception as e:
+            print(f"  ⚠ Pulando {author}: {e}")
         time.sleep(0.3)
 
     return {
@@ -123,14 +124,6 @@ def collect_network_multi(
 ) -> dict:
     """
     Coleta posts de múltiplas queries e constrói uma rede unificada.
-
-    A cada query são coletados até max_posts_per_query posts.
-    Os autores são dedupicados globalmente, e as relações de follow
-    são coletadas uma única vez por autor (mesmo que ele apareça em
-    várias queries).
-
-    O campo 'query' de cada post indica qual busca o originou,
-    o que permite análises comparativas entre as queries.
     """
     client = _get_client()
 
@@ -150,13 +143,20 @@ def collect_network_multi(
     authors = list(dict.fromkeys(p["author"] for p in all_posts))[:max_users]
     author_set = set(authors)
 
+    # remove handles inválidos (contas deletadas/suspensas)
+    authors = [a for a in authors if a != "handle.invalid" and "." in a]
+    author_set = set(authors)
+
     print(f"  → Coletando follows de {len(authors)} autores...")
     follows: list[dict] = []
     for author in authors:
-        targets = get_follows(client, author, max_follows_per_user)
-        for target in targets:
-            if target in author_set and target != author:
-                follows.append({"source": author, "target": target})
+        try:
+            targets = get_follows(client, author, max_follows_per_user)
+            for target in targets:
+                if target in author_set and target != author:
+                    follows.append({"source": author, "target": target})
+        except Exception as e:
+            print(f"  ⚠ Pulando {author}: {e}")
         time.sleep(0.3)
 
     return {

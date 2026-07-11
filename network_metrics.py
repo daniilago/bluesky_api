@@ -1,6 +1,4 @@
-"""Métricas avançadas de rede (Atividade 1).
-
-Cobre:
+"""
 - Distribuição de graus (histograma + curva de frequência acumulada)
 - Coeficiente de clustering global e por nó
 - Centralidade de grau e eigenvector
@@ -19,7 +17,7 @@ import numpy as np
 import pandas as pd
 
 
-# ── Cálculo de métricas ────────────────────────────────────────────────────────
+# Cálculo de métricas
 
 def compute_basic_properties(g: nx.Graph) -> dict:
     """Número de vértices, arestas, densidade, diâmetro (se conexo), etc."""
@@ -84,7 +82,7 @@ def compute_centralities(g: nx.Graph) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
-# ── Visualizações ──────────────────────────────────────────────────────────────
+# Visualizações 
 
 def plot_degree_distribution(
     g: nx.Graph,
