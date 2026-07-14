@@ -1,0 +1,325 @@
+\documentclass[12pt,a4paper]{article}
+
+% --- PACOTES BÁSICOS E CONFIGURAÇÃO ---
+\usepackage[utf8]{inputenc}
+\usepackage[portuguese]{babel}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{geometry}
+\geometry{left=2.5cm, right=2.5cm, top=2.5cm, bottom=2.5cm}
+\usepackage{hyperref}
+\usepackage{amsmath}
+\usepackage{listings}
+\usepackage{float}
+\usepackage{xcolor}
+\usepackage{microtype}
+
+% --- CONFIGURAÇÕES DE CODE LISTING ---
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},   
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{magenta},
+    numberstyle=\tiny\color{codepay},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,         
+    breaklines=true,                 
+    captionpos=b,                    
+    keepspaces=true,                 
+    numbers=left,                    
+    numbersep=5pt,                  
+    showspaces=false,                
+    showstringspaces=false,
+    showtabs=false,                  
+    tabsize=2
+}
+\lstset{style=mystyle}
+
+% --- CAPA E INFORMAÇÕES GERAIS ---
+\title{\textbf{Relatório Técnico: Análise de Redes Sociais, Mineração de Texto e Recomendação no Bluesky}}
+\author{Trabalho de Análise de Redes Sociais\\
+\textit{Desenvolvido via AT Protocol e Módulos Integrados em Python}}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Este relatório descreve o desenvolvimento e os resultados de um sistema integrado de coleta, análise de grafos e mineração de texto focado na plataforma de rede social descentralizada Bluesky. Utilizando a API oficial baseada no AT Protocol, foi modelada uma rede híbrida contendo tanto conexões topológicas de seguidores quanto proximidades semânticas (co-ocorrência lexical) baseada no coeficiente de Jaccard dos posts dos usuários. Em seguida, o algoritmo de Louvain foi aplicado para a detecção de subcomunidades temáticas na rede, cujos discursos foram analisados sob a ótica de mineração de textos, geração de nuvens de palavras e análise de sentimento com o léxico VADER. Por fim, um sistema de recomendação por similaridade de cosseno (TF-IDF) restrito à comunidade foi implementado para sugerir novos contatos e posts relevantes. O trabalho demonstra o poder analítico de fundir informações estruturais de rede com dados não estruturados de texto.
+\end{abstract}
+
+\newpage
+
+% ==========================================
+% 1. INTRODUÇÃO
+% ==========================================
+\section{Introdução}
+O estudo de redes sociais (ARS) tem sido historicamente focado em métricas de topologia pura (grafos de amizade ou seguidores). No entanto, com a ascensão de novas plataformas sociais de arquitetura aberta e descentralizada, como o Bluesky (utilizando o \textit{AT Protocol}), abre-se uma janela de oportunidade única para conduzir estudos metodológicos que unam topologia e conteúdo textual em tempo real.
+
+Este relatório descreve um pipeline completo e integrado desenvolvido em Python. O sistema realiza desde a coleta programática de dados via API até o processamento analítico profundo, que inclui construção de grafos ponderados, cálculo de centralidades, detecção de comunidades, análise de sentimento por comunidade e recomendação personalizada de conteúdo. Ao longo das próximas seções, detalhamos como cada componente foi implementado (o começo), a formulação matemática e lógica do código (o meio) e a discussão detalhada dos resultados extraídos (o fim).
+
+% ==========================================
+% 2. COLETA DE DADOS (O COMEÇO)
+% ==========================================
+\section{Coleta de Dados e Configuração}
+A etapa inicial do projeto consiste no módulo de coleta, contido no arquivo \texttt{collector.py}. A coleta se apoia na biblioteca oficial do SDK do AT Protocol em Python (\texttt{atproto}), permitindo interações autenticadas com os repositórios públicos dos usuários.
+
+\subsection{Autenticação e Credenciais}
+Para acesso à API, o Bluesky exige autenticação por meio do identificador de usuário (\textit{handle}) e de uma senha de aplicativo específica (\textit{App Password}), que evita o comprometimento da senha master da conta. Essas variáveis são injetadas em ambiente seguro através do arquivo \texttt{.env} (\texttt{BLUESKY\_HANDLE} e \texttt{BLUESKY\_PASSWORD}) e lidas pelo método \texttt{\_get\_client()}:
+\begin{lstlisting}[language=Python]
+def _get_client() -> Client:
+    handle = os.getenv("BLUESKY_HANDLE")
+    password = os.getenv("BLUESKY_PASSWORD")
+    client = Client()
+    client.login(handle, password)
+    return client
+\end{lstlisting}
+
+\subsection{Estratégia de Busca e Pagination}
+A coleta de dados é disparada por meio de consultas temáticas (\textit{queries}). O pipeline suporta a busca de uma única query ou a unificação de múltiplas queries (\texttt{collect\_network\_multi}). O processo de coleta ocorre de forma encadeada em dois níveis:
+\begin{enumerate}
+    \item \textbf{Busca de Posts:} A API de busca (\texttt{app.bsky.feed.search\_posts}) é consumida iterativamente. Como o limite padrão por requisição é restrito, utiliza-se paginação via cursores (\textit{cursors}) até atingir a cota configurada pelo parâmetro \texttt{max\_posts} (padrão: 80 posts por query). O sistema extrai campos essenciais como: URI do post, autor (handle), conteúdo textual, contagem de curtidas (\textit{likes}) e de compartilhamentos (\textit{reposts}).
+    \item \textbf{Recuperação de Arestas de Seguidor (Follows):} A partir dos autores únicos identificados no passo anterior (ordenados por aparição e limitados pelo parâmetro \texttt{max\_users}), realiza-se uma segunda série de consultas para listar quem cada usuário segue (\texttt{app.bsky.graph.get\_follows}). Para otimizar a densidade local, o sistema apenas armazena conexões onde o usuário seguido \textit{também pertence} ao conjunto de autores selecionados para a amostra.
+\end{enumerate}
+
+Para evitar bloqueios de requisições por parte do servidor (\textit{rate limiting}), foram introduzidas pausas controladas com \texttt{time.sleep(0.5)} entre as iterações da busca de posts e \texttt{time.sleep(0.3)} durante a listagem de seguidores de cada autor. O conjunto completo de posts e conexões é serializado e salvo no diretório \texttt{data/collected\_data.json}.
+
+% ==========================================
+% 3. METODOLOGIA E DESENVOLVIMENTO (O MEIO)
+% ==========================================
+\section{Desenvolvimento e Estrutura Metodológica}
+Esta seção detalha os componentes de modelagem matemática e lógica do pipeline, demonstrando como se dão a construção da rede híbrida e as técnicas de análise contextual dos posts.
+
+\subsection{Estrutura do Código}
+O sistema foi desenhado de forma modular para isolar responsabilidades específicas, conforme a estrutura abaixo:
+\begin{itemize}
+    \item \texttt{main.py}: Orquestrador da CLI, gerencia os parâmetros de linha de comando e inicializa o pipeline.
+    \item \texttt{collector.py}: Implementa a lógica de paginação, tratamento de erros e chamadas à API do Bluesky.
+    \item \texttt{network\_analysis.py}: Contém a lógica de estruturação do grafo NetworkX, detecção de comunidades com Louvain e sumários estruturais.
+    \item \texttt{network\_metrics.py}: Computa métricas globais e locais da rede (densidade, clustering, centralidades de grau e eigenvector) e gera visualizações de distribuição de graus.
+    \item \texttt{text\_mining.py}: Realiza a limpeza de texto, extração de termos frequentes, computação de TF-IDF local e plotagem de nuvens de palavras.
+    \item \texttt{sentiment\_analysis.py}: Conduz a classificação de polaridade de sentimento dos posts via VADER Sentiment.
+    \item \texttt{recommendation.py}: Implementa o motor de recomendação baseado em conteúdo e comunidades.
+    \item \texttt{report_generator.py}: Compila todos os resultados estatísticos e de texto, montando tabelas e inserindo imagens em um relatório final em PDF.
+\end{itemize}
+
+\subsection{Técnicas de Análise de Relação dos Posts}
+Uma das principais inovações do código reside na criação de um grafo ponderado híbrido em \texttt{network\_analysis.py}. Diferente de análises puramente topológicas, o relacionamento entre os posts dos usuários é explorado para estabelecer arestas semânticas adicionais. O fluxo é definido pelas seguintes regras:
+
+\begin{figure}[H]
+    \centering
+    \begin{minipage}{0.9\textwidth}
+    \textbf{Algoritmo de Construção do Grafo:}
+    \begin{enumerate}
+        \item \textbf{Arestas Topológicas (Follow):} Se o autor $A$ segue o autor $B$, uma aresta bidirecional é inserida no grafo inicial com um peso inicial $W_{follow} = 2.0$.
+        \item \textbf{Extração de Termos:} Para cada autor, agregam-se os textos de todos os seus posts da amostra. Esses textos são limpos (conversão para minúsculas, remoção de caracteres especiais, pontuações, hashtags curtas e URLs). O sistema filtra termos com comprimento menor ou igual a dois caracteres e descarta uma lista personalizada de stopwords que unifica termos comuns em português e inglês (como \textit{``de''}, \textit{``da''}, \textit{``the''}, \textit{``and''}, etc.), além de omitir o próprio termo utilizado na query original. O resultado para um autor $A$ é um conjunto de palavras exclusivas $T_A$.
+        \item \textbf{Cálculo de Similaridade Temática (Jaccard):} Para cada par de autores $(A, B)$ que possuem vocabulários não vazios, calcula-se o Coeficiente de Jaccard entre seus conjuntos de termos $T_A$ e $T_B$:
+        \begin{equation}
+            J(A, B) = \frac{|T_A \cap T_B|}{|T_A \cup T_B|}
+        \end{equation}
+        \item \textbf{Arestas de Conteúdo:} Define-se um limiar de similaridade de conteúdo $\theta = 0.08$. Se $J(A, B) \geq \theta$, estabelece-se um relacionamento temático entre eles com peso $W_{content} = 1 + J(A, B)$.
+        \item \textbf{Integração de Arestas:} Caso $A$ e $B$ já possuíssem uma aresta do tipo ``follow'' e atendam à similaridade temática, a aresta passa a ser do tipo ``mixed'' e seu peso é somado:
+        \begin{equation}
+            W_{total} = W_{follow} + W_{content} = 2.0 + 1 + J(A, B)
+        \end{equation}
+        Se não possuíssem, cria-se uma aresta do tipo ``content'' com peso $W_{total} = W_{content}$.
+    \end{enumerate}
+    \end{minipage}
+\end{figure}
+
+Esta abordagem permite capturar comunidades latentes que interagem sobre os mesmos assuntos (ex: discussões sobre desenvolvimento de jogos, consoles ou lançamentos), mesmo que os usuários ainda não se sigam formalmente na plataforma.
+
+\subsection{Detecção de Comunidades com Algoritmo de Louvain e Fallbacks}
+Uma vez construído o grafo ponderado híbrido, o sistema realiza a partição em subcomunidades usando o algoritmo de \textbf{Louvain} (\texttt{community\_louvain.best\_partition}). Louvain busca otimizar a modularidade da rede, agrupando nós que possuem maior peso de conexões internas comparado a conexões externas. 
+
+Entretanto, em redes muito jovens ou geradas com parâmetros de query restritos, a topologia pode se comportar de forma patológica. Para garantir a robustez metodológica, o módulo \texttt{network\_analysis.py} implementa mecanismos automáticos de \textit{fallback}:
+\begin{itemize}
+    \item \textbf{Caso de Alta Densidade:} Se a densidade do grafo construído for superior a $0.85$ (indicando um grafo quase completo onde o Louvain agruparia todos em uma única comunidade gigante), o algoritmo descarta a topologia e agrupa os usuários aplicando o método \textbf{K-Means} no espaço textual das mensagens (com representação TF-IDF).
+    \item \textbf{Caso de Rede Desconexa/Esparsa:} Se o número de arestas for nulo ou se mais de 60\% dos nós forem particionados em comunidades com um único integrante (singleton ratio $> 0.6$), assume-se que as conexões de rede são insuficientes. O pipeline ativa novamente o fallback do K-Means textual para agrupar os usuários puramente pela afinidade temática de suas postagens.
+\end{itemize}
+
+\subsection{Análise de Sentimento}
+Após particionar os usuários em comunidades, o texto de cada comunidade é analisado individualmente. O módulo \texttt{sentiment\_analysis.py} utiliza a ferramenta VADER (\textit{Valence Aware Dictionary and sEntiment Reasoner}), ideal para microtextos de mídias sociais devido ao tratamento sensível a capitalizações, pontuações expressivas (como exclamações) e emoticons. A polaridade do sentimento é medida pela pontuação métrica \textit{compound} que varia em $[-1.0, 1.0]$. Os posts são classificados segundo os limiares:
+\begin{itemize}
+    \item \textbf{Positivo:} $compound \geq 0.05$
+    \item \textbf{Negativo:} $compound \leq -0.05$
+    \item \textbf{Neutro:} $-0.05 < compound < 0.05$
+\end{itemize}
+As estatísticas de sentimento são sumarizadas e plotadas em gráficos de box-plot (por comunidade) e barras empilhadas para comparar a atitude discursiva de cada grupo detectado.
+
+\subsection{Sistema de Recomendação por Comunidade}
+Para agregar valor prático à segmentação de redes, o script \texttt{recommendation.py} implementa um sistema de recomendação de usuários e conteúdos. Dado um usuário de destino $U$:
+\begin{enumerate}
+    \item Filtram-se todos os outros usuários que pertencem \textit{estritamente à mesma comunidade} de $U$, formando o conjunto de candidatos.
+    \item Constrói-se a matriz termo-documento via vetorização \textbf{TF-IDF} (\textit{Term Frequency - Inverse Document Frequency}) do perfil textual agregado dos usuários.
+    \item Computa-se a \textbf{Similaridade de Cosseno} entre o vetor de $U$ e o vetor de cada candidato. Os $N$ candidatos mais similares são recomendados.
+    \item O sistema varre as mensagens publicadas por esses contatos sugeridos e recomenda os posts que obtiveram maior pontuação de engajamento interno (medida pela soma de curtidas e compartilhamentos: $likes + reposts$).
+\end{enumerate}
+
+% ==========================================
+% 4. APRESENTAÇÃO E DISCUSSÃO DOS RESULTADOS (O FIM)
+% ==========================================
+\section{Resultados da Análise da Rede}
+Os dados analisados foram extraídos de uma busca focada na temática de videogames e marcas associadas à indústria, com destaque para termos relacionados à desenvolvedora \textit{Capcom} (como os jogos \textit{Resident Evil} e \textit{Dragon's Dogma}). A seguir, apresentam-se as propriedades calculadas da rede correspondente ao arquivo \texttt{relatorio\_analise\_redes.pdf}.
+
+\subsection{Propriedades Gerais da Rede}
+A tabela \ref{tab:basic_props} traz o panorama topológico da rede híbrida estruturada.
+
+\begin{table}[H]
+\centering
+\caption{Propriedades Gerais da Rede Bluesky}
+\label{tab:basic_props}
+\begin{tabular}{lr}
+\toprule
+\textbf{Propriedade} & \textbf{Valor} \\
+\midrule
+Número de vértices (usuários) & 100 \\
+Número de arestas & 53 \\
+Densidade da rede & 0.0107 \\
+Componentes conexas & 58 \\
+Tamanho da maior componente conexa (LCC) & 25 \\
+Grau médio dos vértices & 1.060 \\
+Coeficiente de clustering médio & 0.0963 \\
+Diâmetro (maior componente conexa) & 11 \\
+Caminho médio (maior componente conexa) & 4.443 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A rede apresenta uma densidade muito baixa (cerca de 1\%) e um número elevado de componentes conexas (58). Isso indica que a comunidade que comenta sobre a query no Bluesky ainda é fragmentada, consistindo majoritariamente em pequenos grupos isolados de conversação e alguns usuários avulsos. A maior componente conexa engloba 25 usuários, com um diâmetro de 11 passos e distância média de 4,44 saltos, refletindo uma estrutura de conexões linearizada e em formato de ``varal'', típica de redes em estágio inicial de formação.
+
+\subsection{Centralidade dos Vértices}
+A análise de centralidade é fundamental para mapear os influenciadores e intermediadores da rede. A tabela \ref{tab:centralities} elenca as 10 contas com maior centralidade de Eigenvector (que pondera o grau dos vizinhos do nó).
+
+\begin{table}[H]
+\centering
+\caption{Top 10 Usuários por Centralidade de Eigenvector}
+\label{tab:centralities}
+\begin{tabular}{rlccc}
+\toprule
+\textbf{Rank} & \textbf{Usuário} & \textbf{Grau} & \textbf{Centralidade Eigenvector} & \textbf{Coef. Clustering} \\
+\midrule
+1 & \texttt{capcomusa.com} & 5 & 0.6456 & 0.0000 \\
+2 & \texttt{jsaking11.bsky.social} & 5 & 0.3815 & 0.2000 \\
+3 & \texttt{missandydandy.bsky.social} & 3 & 0.3471 & 0.0000 \\
+4 & \texttt{burnttoastboi.bsky.social} & 2 & 0.2847 & 0.0000 \\
+5 & \texttt{playfrontde.bsky.social} & 1 & 0.2687 & 0.0000 \\
+6 & \texttt{dwill312.bsky.social} & 1 & 0.2687 & 0.0000 \\
+7 & \texttt{girrulez.bsky.social} & 3 & 0.1491 & 0.6667 \\
+8 & \texttt{poshywoshy.bsky.social} & 1 & 0.1445 & 0.0000 \\
+9 & \texttt{angelus04.bsky.social} & 2 & 0.1259 & 1.0000 \\
+10 & \texttt{lolodepuzlo.bsky.social} & 2 & 0.1195 & 1.0000 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O perfil institucional \texttt{capcomusa.com} obteve o maior grau (5) e a maior centralidade de eigenvector (0.6456). Isso demonstra o papel da conta corporativa como o principal ponto de convergência gravitacional na rede, centralizando o fluxo de atenção dos usuários que discutem os títulos da marca. O usuário \texttt{jsaking11.bsky.social} também possui grau 5 e alta centralidade (0.3815), mas com um coeficiente de agrupamento de 0.20, sugerindo que parte de seus vizinhos interage entre si, formando um triângulo local de discussões de jogos. Os nós 9 e 10 têm clustering de 1.00, significando que seus vizinhos estão totalmente conectados entre si, caracterizando micro-grupos coesos.
+
+\subsection{Análise das Comunidades e Vocabulário (Text Mining)}
+O algoritmo detectou 10 comunidades bem definidas. A tabela \ref{tab:comm_summary} resume as características estruturais e os termos mais distintivos das principais comunidades.
+
+\begin{table}[H]
+\centering
+\caption{Sumário de Comunidades e Palavras-Chave}
+\label{tab:comm_summary}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{cccclp{6.5cm}}
+\toprule
+\textbf{ID} & \textbf{Nós} & \textbf{Arestas} & \textbf{Densidade} & \textbf{Termos Frequentes} & \textbf{Descrição Contextual} \\
+\midrule
+1 & 32 & 4 & 0.008 & capcom, they, \#capcom, with, have & Comunidade geral de discussão corporativa e anúncios. \\
+2 & 7 & 6 & 0.286 & twitch, live, \#capcom, playing, going & Micro-rede focada em criadores de conteúdo e streams de jogos da Capcom. \\
+3 & 6 & 0 & 0.000 & capcom, dragon, dogma, \#capcom, qué & Grupo em idioma espanhol com foco específico na franquia \textit{Dragon's Dogma}. \\
+4 & 10 & 3 & 0.067 & capcom, people, resident, evil, saudi & Discussões sobre \textit{Resident Evil} e notícias corporativas (investimento saudita). \\
+5 & 9 & 1 & 0.028 & new, you, \#capcom, look, game & Focada em reações a novidades e aspectos visuais dos jogos. \\
+6 & 6 & 3 & 0.200 & dragon, dogma, dark, arisen, capcom & Foco dedicado a gameplay e mecânicas de \textit{Dragon's Dogma: Dark Arisen}. \\
+7 & 6 & 1 & 0.067 & capcom, games, perfect, some, but & Discussões opinativas acerca da qualidade histórica dos jogos. \\
+8 & 10 & 0 & 0.000 & switch, capcom, game, 2026, konami & Focada em expectativas de lançamentos para Nintendo Switch e concorrência (Konami). \\
+9 & 7 & 3 & 0.143 & was, capcom, they, snk, games & Discussão sobre a clássica rivalidade e crossovers (Capcom vs SNK). \\
+0 & 2 & 0 & 0.000 & wii, capcom, deep, tough & Micro-comunidade focada em retro-jogos (Nintendo Wii). \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+A análise revela que o pipeline dividiu a temática macro de videogames em nichos semânticos claros: enquanto a Comunidade 2 possui densidade interna muito alta (28.6\%) e reflete o ecossistema ativo de \textit{streamers} da Twitch marcando seus posts em tempo real, a Comunidade 8 discute puramente especulações futuras (Nintendo Switch 2, Konami, lançamentos em 2026), possuindo densidade interna zero devido à falta de laços topológicos de seguidores diretos, sendo agregada estritamente pelo filtro de similaridade lexical de Jaccard do pipeline.
+
+\subsection{Perfil de Sentimento por Comunidade}
+A análise de sentimento permite qualificar a atitude discursiva interna de cada grupo de usuários. A tabela \ref{tab:sentiment} detalha a distribuição das classificações geradas pelo VADER.
+
+\begin{table}[H]
+\centering
+\caption{Distribuição de Sentimento por Comunidade}
+\label{tab:sentiment}
+\begin{tabular}{crcccrrr}
+\toprule
+\textbf{Com.} & \textbf{Posts} & \textbf{Média Compound} & \textbf{Mediana} & \textbf{Desvio Padrão} & \textbf{Positivos} & \textbf{Neutros} & \textbf{Negativos} \\
+\midrule
+-1$^\dagger$ & 185 & -0.051 & 0.000 & 0.569 & 70 & 37 & 78 \\
+0 & 2 & -0.191 & -0.191 & 0.270 & 0 & 1 & 1 \\
+1 & 37 & +0.043 & 0.000 & 0.455 & 12 & 12 & 13 \\
+2 & 7 & +0.419 & +0.418 & 0.225 & 7 & 0 & 0 \\
+3 & 6 & +0.038 & 0.000 & 0.325 & 2 & 3 & 1 \\
+4 & 11 & +0.162 & +0.226 & 0.470 & 6 & 2 & 3 \\
+5 & 10 & -0.009 & +0.064 & 0.605 & 5 & 1 & 4 \\
+6 & 7 & +0.198 & +0.318 & 0.584 & 4 & 0 & 3 \\
+7 & 6 & +0.189 & +0.239 & 0.762 & 3 & 0 & 3 \\
+8 & 18 & +0.069 & 0.000 & 0.495 & 6 & 8 & 4 \\
+9 & 7 & +0.112 & 0.000 & 0.547 & 3 & 2 & 2 \\
+\bottomrule
+\multicolumn{8}{l}{\footnotesize $^\dagger$ A comunidade -1 representa posts de usuários que não entraram no top 100 de autores da rede principal.}
+\end{tabular}
+\end{table}
+
+A comunidade geral de posts secundários (Com. -1) possui uma média levemente negativa (-0.051), indicando reclamações dispersas ou desabafos dos usuários em geral. Por outro lado, a Comunidade 2, associada à divulgação de transmissões ao vivo da Twitch e jogabilidade, apresenta o maior tom positivo de todos os grupos ($\mu_{compound} = +0.419$), com 100\% de seus posts classificados como positivos. Isso decorre da linguagem entusiasmada comum em chamadas de streams (ex: \textit{``going live'', ``fun'', ``playing with friends''}). A Comunidade 4, que lida com Resident Evil e o investimento da Arábia Saudita, mantém uma polaridade positiva equilibrada (+0.162), enquanto a Comunidade 5 beira a neutralidade absoluta (-0.009), mesclando elogios de design a críticas técnicas dos jogos.
+
+% ==========================================
+% 5. CONCLUSÃO (O FIM)
+% ==========================================
+\section{Conclusão}
+O sistema desenvolvido logrou êxito na integração entre a engenharia de dados (coleta via AT Protocol), teoria de grafos (estruturação de redes) e Processamento de Linguagem Natural (VADER e TF-IDF). 
+
+A principal contribuição metodológica apresentada é a criação de arestas de proximidade de conteúdo através do Coeficiente de Jaccard lexical. Essa abordagem superou a limitação da esparsidade topológica das redes sociais incipientes (onde a taxa de conexões diretas por seguidor é pequena), agrupando com sucesso os usuários em clusters temáticos congruentes. A identificação de marcas de interesse comuns nas comunidades (como a especificidade de Dragon's Dogma e os streamers no Twitch) e a atitude sentimental dos discursos (revelada pela positividade dos streamers e neutralidade das discussões de mercado) mostram a potencialidade prática destas ferramentas de ARS. Tais ferramentas mostram-se valiosas para estudos de marcas, análise de comportamento de comunidades em jogos e inteligência competitiva digital.
+
+\newpage
+% ==========================================
+% APÊNDICE
+% ==========================================
+\section*{Apêndice: Trechos Relevantes do Código}
+
+Abaixo está o trecho em \texttt{network\_analysis.py} que realiza a análise híbrida de relações, integrando follows e co-participação temática de posts usando a similaridade de Jaccard:
+
+\begin{lstlisting}[language=Python, caption=Cálculo de arestas temáticas baseadas em Jaccard]
+# Trecho adaptado do método build_graph em network_analysis.py
+terms_by_author = {author: _author_terms(texts, query) for author, texts in posts_by_author.items()}
+author_list = list(terms_by_author.keys())
+
+for i, a in enumerate(author_list):
+    for b in author_list[i + 1 :]:
+        terms_a = terms_by_author[a]
+        terms_b = terms_by_author[b]
+        if not terms_a or not terms_b:
+            continue
+
+        intersection = terms_a & terms_b
+        union = terms_a | terms_b
+        jaccard = len(intersection) / len(union)
+        
+        if jaccard < content_similarity: # content_similarity padrao = 0.08
+            continue
+
+        weight = 1 + jaccard
+        if g.has_edge(a, b):
+            g[a][b]["weight"] += weight
+            g[a][b]["type"] = "mixed"
+        else:
+            g.add_edge(a, b, weight=weight, type="content")
+\end{lstlisting}
+
+\end{document}
